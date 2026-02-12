@@ -15,7 +15,7 @@
 Wemos OLED, 128x64 = https://www.aliexpress.com/item/1005009923777658.html
 
 ## 3D printed enclosure 
-TBD
+Something like https://www.printables.com/model/510481-terminal-for-ssd1306-096-oled-and-wemos-d1-mini
 
 ## Run backend:
 Works only on OSX because of stored accesstoken in system keychain; token is NEVER sent anywhere
