@@ -1,3 +1,7 @@
+# What is this?
+
+This project is a small desktop “ticker” built with a Wemos D1 mini (ESP8266) and a 0.96" OLED display (SSD1306) that continuously shows the current usage of your Claude Code limits (the 5-hour and 7-day windows). It receives fresh JSON updates (every 5 minutes) over local Wi-Fi, turns those values into clean full-width progress bars, and displays the corresponding reset times, so you can see at a glance how much quota you have left and when it replenishes—without opening an app or storing any sensitive access tokens on the device.
+
 # HW:
 ##  3-wire SPI OLED → Wemos D1 mini (ESP8266)
 
@@ -11,8 +15,8 @@
 | **VCC** | **3V3** |
 | **GND** | **GND** |
 
-##  0.96" OLED 
-Wemos OLED, 128x64 = https://www.aliexpress.com/item/1005009923777658.html
+## 0.96" OLED 
+Wemos OLED, 128x64 = https://www.aliexpress.com/item/1005009923777658.html (two-colored is nice)
 
 ## 3D printed enclosure 
 Something like https://www.printables.com/model/510481-terminal-for-ssd1306-096-oled-and-wemos-d1-mini
