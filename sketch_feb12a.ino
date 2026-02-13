@@ -6,6 +6,7 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
@@ -25,33 +26,84 @@ const char* MDNS_NAME = "claude-ticker-001"; // => http://claude-ticker-px.local
 
 ESP8266WebServer server(80);
 
+// ---- NTP ----
+const char* NTP_SERVER = "pool.ntp.org";
+
 // State
 bool hasFirstJson = false;
+bool ntpSynced = false;
 
 // Last received values
 float fivePct = 0.0;
 float sevenPct = 0.0;
-String fiveTs = "--.--. --:--";
-String sevenTs = "--.--. --:--";
+time_t fiveResetsAt = 0;
+time_t sevenResetsAt = 0;
 
-String formatIsoToDdMmHHMM(const char* iso)
+String getCurrentTimeStr()
 {
-  if (!iso || !iso[0]) return F("--.--. --:--");
-  if (strlen(iso) < 16 || iso[4] != '-' || iso[7] != '-' || iso[10] != 'T' || iso[13] != ':')
-    return F("--.--. --:--");
+  time_t now = time(nullptr);
+  if (now < 100000) return String();
+  struct tm* t = localtime(&now);
+  char buf[6];
+  snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
+  return String(buf);
+}
 
-  char dd[3] = { iso[8],  iso[9],  0 };
-  char mm[3] = { iso[5],  iso[6],  0 };
-  char hh[3] = { iso[11], iso[12], 0 };
-  char mi[3] = { iso[14], iso[15], 0 };
+void syncNtp()
+{
+  configTime(0, 0, NTP_SERVER);
+  Serial.print("NTP sync...");
 
-  String out;
-  out.reserve(12);
-  out += dd; out += '.';
-  out += mm; out += F(". ");
-  out += hh; out += ':';
-  out += mi;
-  return out;
+  int attempts = 0;
+  while (time(nullptr) < 100000 && attempts < 20) {
+    delay(500);
+    attempts++;
+  }
+
+  if (time(nullptr) >= 100000) {
+    ntpSynced = true;
+    time_t now = time(nullptr);
+    struct tm* t = localtime(&now);
+    Serial.printf(" OK: %02d:%02d:%02d\n", t->tm_hour, t->tm_min, t->tm_sec);
+  } else {
+    Serial.println(" FAILED");
+  }
+}
+
+// Parse ISO 8601 UTC string "2025-02-13T12:34:56Z" to time_t
+time_t parseIsoUtc(const char* iso)
+{
+  if (!iso || strlen(iso) < 16) return 0;
+  struct tm tm = {};
+  // YYYY-MM-DDTHH:MM:SS
+  tm.tm_year = atoi(iso) - 1900;
+  tm.tm_mon  = atoi(iso + 5) - 1;
+  tm.tm_mday = atoi(iso + 8);
+  tm.tm_hour = atoi(iso + 11);
+  tm.tm_min  = atoi(iso + 14);
+  if (strlen(iso) >= 19) tm.tm_sec = atoi(iso + 17);
+  return mktime(&tm);
+}
+
+// Format remaining time from now until target
+String formatRemaining(time_t target)
+{
+  if (target == 0 || !ntpSynced) return F("--");
+  time_t now = time(nullptr);
+  long diff = (long)(target - now);
+  if (diff <= 0) return F("0m");
+
+  long days = diff / 86400;
+  long hours = (diff % 86400) / 3600;
+  long mins = (diff % 3600) / 60;
+
+  char buf[16];
+  if (days > 0) {
+    snprintf(buf, sizeof(buf), "%ldd %ldh", days, hours);
+  } else {
+    snprintf(buf, sizeof(buf), "%ldh %ldm", hours, mins);
+  }
+  return String(buf);
 }
 
 float clampPct(float v) { return v < 0 ? 0 : (v > 100 ? 100 : v); }
@@ -68,7 +120,7 @@ void drawProgressBarFullWidth(int x, int y, int w, int h, float pct)
   display.fillRect(x + 1, y + 1, fillW, h - 2, SSD1306_WHITE);
 }
 
-void drawLineLeftDateRightPct(int y, const String& dateStr, float pct)
+void drawLineRemainingAndPct(int y, time_t resetsAt, float pct)
 {
   pct = clampPct(pct);
 
@@ -76,7 +128,7 @@ void drawLineLeftDateRightPct(int y, const String& dateStr, float pct)
   display.setTextColor(SSD1306_WHITE);
 
   display.setCursor(0, y);
-  display.print(dateStr);
+  display.print(formatRemaining(resetsAt));
 
   char pctBuf[6];
   snprintf(pctBuf, sizeof(pctBuf), "%d%%", (int)lroundf(pct));
@@ -97,10 +149,10 @@ void renderGraphs()
   display.clearDisplay();
 
   drawProgressBarFullWidth(0, 0, 128, 16, fivePct);
-  drawLineLeftDateRightPct(18, fiveTs, fivePct);
+  drawLineRemainingAndPct(18, fiveResetsAt, fivePct);
 
   drawProgressBarFullWidth(0, 32, 128, 16, sevenPct);
-  drawLineLeftDateRightPct(52, sevenTs, sevenPct);
+  drawLineRemainingAndPct(52, sevenResetsAt, sevenPct);
 
   display.display();
 }
@@ -151,6 +203,15 @@ void renderIpAndMdnsScreen(const IPAddress& ip, bool mdnsOk)
   display.setCursor(0, 50);
   display.print(F("POST /update"));
 
+  if (ntpSynced) {
+    String ts = getCurrentTimeStr();
+    int16_t x1, y1;
+    uint16_t tw, th;
+    display.getTextBounds(ts.c_str(), 0, 0, &x1, &y1, &tw, &th);
+    display.setCursor(SCREEN_WIDTH - tw, 50);
+    display.print(ts);
+  }
+
   display.display();
 }
 
@@ -185,8 +246,8 @@ void handleUpdate()
   const char* fts = doc["five_hour"]["resets_at"] | (const char*)nullptr;
   const char* sts = doc["seven_day"]["resets_at"] | (const char*)nullptr;
 
-  fiveTs  = formatIsoToDdMmHHMM(fts);
-  sevenTs = formatIsoToDdMmHHMM(sts);
+  fiveResetsAt  = fts ? parseIsoUtc(fts) : 0;
+  sevenResetsAt = sts ? parseIsoUtc(sts) : 0;
 
   hasFirstJson = true;
   renderGraphs();
@@ -221,6 +282,9 @@ void setup()
   IPAddress ip = WiFi.localIP();
   Serial.print("WiFi connected, IP: ");
   Serial.println(ip);
+
+  // NTP time sync
+  syncNtp();
 
   // mDNS
   bool mdnsOk = MDNS.begin(MDNS_NAME);
@@ -277,10 +341,14 @@ void loop()
   server.handleClient();
   MDNS.update();
 
-  // Keep showing IP/mDNS screen until first JSON arrives
+  // Periodic display refresh
   static uint32_t last = 0;
-  if (!hasFirstJson && millis() - last > 5000) {
+  if (millis() - last > 30000) {  // every 30s
     last = millis();
-    renderIpAndMdnsScreen(WiFi.localIP(), true);
+    if (hasFirstJson) {
+      renderGraphs();  // update remaining time
+    } else {
+      renderIpAndMdnsScreen(WiFi.localIP(), true);
+    }
   }
 }
