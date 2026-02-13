@@ -206,6 +206,9 @@ void setup()
   renderConnecting(0);
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  WiFi.setAutoReconnect(true);
+  WiFi.persistent(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   uint32_t dots = 0;
@@ -241,6 +244,36 @@ void setup()
 
 void loop()
 {
+  // WiFi reconnect check
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi lost, reconnecting...");
+    WiFi.disconnect();
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+    uint32_t dots = 0;
+    while (WiFi.status() != WL_CONNECTED) {
+      renderConnecting(dots++);
+      delay(350);
+      yield();
+      // Safety: po 30s restart (aby se nezacyklil)
+      if (dots > 85) {
+        Serial.println("WiFi reconnect timeout, restarting...");
+        ESP.restart();
+      }
+    }
+
+    Serial.print("WiFi reconnected, IP: ");
+    Serial.println(WiFi.localIP());
+    MDNS.begin(MDNS_NAME);
+    MDNS.addService("http", "tcp", 80);
+
+    if (hasFirstJson) {
+      renderGraphs();
+    } else {
+      renderIpAndMdnsScreen(WiFi.localIP(), true);
+    }
+  }
+
   server.handleClient();
   MDNS.update();
 
@@ -248,7 +281,6 @@ void loop()
   static uint32_t last = 0;
   if (!hasFirstJson && millis() - last > 5000) {
     last = millis();
-    // We don't know if mdns stays ok; assume yes if began successfully
     renderIpAndMdnsScreen(WiFi.localIP(), true);
   }
 }
